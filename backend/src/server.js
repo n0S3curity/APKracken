@@ -2,6 +2,7 @@ import { createApp } from './app.js';
 import { disconnect } from './db.js';
 import { ensureDefaultSeverityRankers } from './lib/defaultSeverityRankers.js';
 import { ensureDefaultWorkflows } from './lib/defaultWorkflows.js';
+import { ensureMobileResearchPostScripts } from './lib/defaultPostScripts.js';
 import { logger } from './lib/logger.js';
 
 const PORT = process.env.BACKEND_PORT || process.env.PORT || 3002;
@@ -14,6 +15,10 @@ if (installedDefaults.length) {
 const installedRankers = await ensureDefaultSeverityRankers();
 if (installedRankers.length) {
   logger.info({ severityRankers: installedRankers }, 'installed default severity rankers');
+}
+const installedPostScripts = await ensureMobileResearchPostScripts();
+if (installedPostScripts.length) {
+  logger.info({ postScripts: installedPostScripts }, 'installed mobile-research post-scripts');
 }
 
 const app = createApp();

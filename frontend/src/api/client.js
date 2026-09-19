@@ -174,17 +174,75 @@ export const api = {
   // local repos available to scan
   localRepos: () => request('/local-repos'),
   apkInbox: () => request('/apk/inbox'),
-  scanApkExisting: (filename, { mode = 'static', thirdParty = false, workflow = 'triage', passes = 2 } = {}) =>
-    request('/apk/scan-existing', { method: 'POST', body: { filename, mode, thirdParty, workflow, passes } }),
-  uploadApkScan: async (file, { mode = 'static', thirdParty = false, workflow = 'triage', passes = 2 } = {}) => {
-    const res = await fetch(
-      `${BASE}/api/apk/scan?filename=${encodeURIComponent(file.name)}&mode=${encodeURIComponent(mode)}&thirdParty=${thirdParty ? '1' : '0'}&workflow=${encodeURIComponent(workflow)}&passes=${encodeURIComponent(passes)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: file,
-      }
-    );
+  scanApkExisting: (
+    filename,
+    {
+      mode = 'static',
+      thirdParty = false,
+      workflow = 'triage',
+      passes = 2,
+      model,
+      model_provider,
+      harness,
+      thinking_effort,
+      postScriptIds,
+      rankerIds,
+      rankerExtra,
+    } = {}
+  ) =>
+    request('/apk/scan-existing', {
+      method: 'POST',
+      body: {
+        filename,
+        mode,
+        thirdParty,
+        workflow,
+        passes,
+        model,
+        model_provider,
+        harness,
+        thinking_effort,
+        postScriptIds,
+        rankerIds,
+        rankerExtra,
+      },
+    }),
+  uploadApkScan: async (
+    file,
+    {
+      mode = 'static',
+      thirdParty = false,
+      workflow = 'triage',
+      passes = 2,
+      model,
+      model_provider,
+      harness,
+      thinking_effort,
+      postScriptIds,
+      rankerIds,
+      rankerExtra,
+    } = {}
+  ) => {
+    const q = new URLSearchParams({
+      filename: file.name,
+      mode,
+      thirdParty: thirdParty ? '1' : '0',
+      workflow,
+      passes: String(passes),
+    });
+    // Optional model / post-script / ranker overrides (pentest tabs); omit when unset.
+    if (model) q.set('model', model);
+    if (model_provider) q.set('model_provider', model_provider);
+    if (harness) q.set('harness', harness);
+    if (thinking_effort) q.set('thinking_effort', thinking_effort);
+    if (postScriptIds) q.set('postScriptIds', postScriptIds);
+    if (rankerIds) q.set('rankerIds', rankerIds);
+    if (rankerExtra) q.set('rankerExtra', rankerExtra);
+    const res = await fetch(`${BASE}/api/apk/scan?${q.toString()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
     let data = null;
     try {
       data = await res.json();

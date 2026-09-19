@@ -132,6 +132,13 @@ def generation_harness_failure_message(error: HarnessError, generation_id: int) 
     return f"{message} Diagnostic: {code} (generation {generation_id})."
 
 
+def _step_requires_device(step: Any) -> bool:
+    """A step is device-bound when its prompt template carries the [[REQUIRES_DEVICE]]
+    sentinel — those steps need the local harness's ADB/Frida device tools to run."""
+    content = getattr(step, "content", "") or ""
+    return "[[REQUIRES_DEVICE]]" in content
+
+
 class Worker:
     def __init__(self, config: EngineConfig, db: Database | None = None):
         self.config = config
@@ -1305,14 +1312,29 @@ class Worker:
                 continue
 
             did_claim = False
+            device_harness = None  # lazily-built local harness for [[REQUIRES_DEVICE]] steps
+            scan_harness_is_local = normalize_harness_name(current["harness"]) == "local"
             for job in jobs:
                 if not self._worker_can_pick_job(worker_id):
                     return did_work
+                # Device-reproduction steps need the local harness's ADB/Frida device tools.
+                # When the user picked a cloud model for the static research, still run those
+                # steps on the local engine so device verification keeps working.
+                job_harness = harness
+                if not scan_harness_is_local and _step_requires_device(job.step):
+                    if device_harness is None:
+                        device_harness = harness_for(
+                            "local",
+                            timeout_seconds=self.runtime_harness_timeout_seconds(),
+                            model_provider="local",
+                            device_context=self._device_context_for(current, workflow),
+                        )
+                    job_harness = device_harness
                 did_claim = self.execute_job(
                     scan=current,
                     workflow_id=workflow.id,
                     job=job,
-                    harness=harness,
+                    harness=job_harness,
                 )
                 if did_claim:
                     return True

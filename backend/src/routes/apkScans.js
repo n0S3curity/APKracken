@@ -10,8 +10,15 @@ import crypto from 'node:crypto';
 import { prisma } from '../db.js';
 import {
   ANDROID_SEVERITY_RANKER_NAME,
+  ANDROID_RESEARCH_SEVERITY_RANKER_NAME,
+  SAMSUNG_RESEARCH_SEVERITY_RANKER_NAME,
   ensureDefaultSeverityRankers,
 } from '../lib/defaultSeverityRankers.js';
+import {
+  ANDROID_RESEARCH_POST_SCRIPT_NAME,
+  SAMSUNG_RESEARCH_POST_SCRIPT_NAME,
+  ensureMobileResearchPostScripts,
+} from '../lib/defaultPostScripts.js';
 import { ensureAndroidDeepResearchWorkflow } from '../lib/androidDeepResearch.js';
 import { ensureAndroidDeepDynamicWorkflow } from '../lib/androidDeepDynamic.js';
 import { ensureAndroidDynamicResearchWorkflow } from '../lib/androidDynamicResearch.js';
@@ -121,18 +128,18 @@ function normalizeAnalysisMode(raw) {
   return String(raw || '').toLowerCase() === 'dynamic' ? 'dynamic' : 'static';
 }
 
-// The Android/APK severity ranker is the default rank design for APK scans. Look up its
-// content (seeding it first if a fresh DB hasn't yet), copied onto the scan at creation.
-async function apkSeverityRankerContent() {
+// Look up a named severity ranker's content (seeding the defaults first if a fresh DB has
+// none yet). Each APK workflow has a default rank design copied onto the scan at creation.
+async function severityRankerContentByName(name) {
   let ranker = await prisma.severityRanker.findFirst({
-    where: { name: ANDROID_SEVERITY_RANKER_NAME },
+    where: { name },
     orderBy: { insertedAt: 'asc' },
     select: { content: true },
   });
   if (!ranker) {
     await ensureDefaultSeverityRankers();
     ranker = await prisma.severityRanker.findFirst({
-      where: { name: ANDROID_SEVERITY_RANKER_NAME },
+      where: { name },
       orderBy: { insertedAt: 'asc' },
       select: { content: true },
     });
@@ -140,7 +147,106 @@ async function apkSeverityRankerContent() {
   return ranker?.content ?? null;
 }
 
-async function createApkScan(filename, analysisMode = 'static', includeThirdParty = false, workflowKey = 'triage', passes) {
+// The default ranker NAME for a given APK workflow key: the dynamic/Samsung research flows
+// each get their dedicated device-aware ranker; everything else uses the Android triage rank.
+function defaultRankerNameForWorkflow(workflowKey) {
+  if (workflowKey === 'samsung') return SAMSUNG_RESEARCH_SEVERITY_RANKER_NAME;
+  if (workflowKey === 'exploit') return ANDROID_RESEARCH_SEVERITY_RANKER_NAME;
+  return ANDROID_SEVERITY_RANKER_NAME;
+}
+
+// The default post-script NAME for a given APK workflow key (used when the caller picks none).
+function defaultPostScriptNameForWorkflow(workflowKey) {
+  if (workflowKey === 'samsung') return SAMSUNG_RESEARCH_POST_SCRIPT_NAME;
+  if (workflowKey === 'exploit') return ANDROID_RESEARCH_POST_SCRIPT_NAME;
+  return null; // fall back to the first seeded post-script
+}
+
+// Parse a list of ids that may arrive as an array or a comma-separated string (query param).
+// Returns distinct BigInt ids, dropping anything non-numeric.
+function parseIdList(raw) {
+  const parts = Array.isArray(raw) ? raw : String(raw ?? '').split(',');
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    const s = String(p ?? '').trim();
+    if (!/^\d+$/.test(s) || seen.has(s)) continue;
+    seen.add(s);
+    out.push(BigInt(s));
+  }
+  return out;
+}
+
+// Resolve the final severity_ranker string for an APK scan: if the caller selected ranker
+// ids, concatenate their content (in order) + any custom rules; otherwise use the workflow's
+// default named ranker. Mirrors the frontend combineSeverityRanker join.
+async function resolveApkSeverityRanker({ rankerIds, rankerExtra, workflowKey }) {
+  const ids = parseIdList(rankerIds);
+  const parts = [];
+  if (ids.length) {
+    const rows = await prisma.severityRanker.findMany({ where: { id: { in: ids } }, select: { id: true, content: true } });
+    const byId = new Map(rows.map((r) => [r.id.toString(), r.content]));
+    for (const id of ids) {
+      const content = byId.get(id.toString());
+      if (content && content.trim()) parts.push(content.trim());
+    }
+  }
+  const extra = String(rankerExtra ?? '').trim();
+  if (extra) parts.push(extra);
+  if (parts.length) return parts.join('\n\n');
+  return severityRankerContentByName(defaultRankerNameForWorkflow(workflowKey));
+}
+
+// Resolve the primary + all selected post-script ids for an APK scan. Uses caller-selected
+// ids when valid; otherwise the workflow's default post-script (or the first seeded one).
+async function resolveApkPostScriptIds({ postScriptIds, workflowKey }) {
+  const ids = parseIdList(postScriptIds);
+  if (ids.length) {
+    const rows = await prisma.postScript.findMany({ where: { id: { in: ids } }, select: { id: true } });
+    const valid = new Set(rows.map((r) => r.id.toString()));
+    const ordered = ids.filter((id) => valid.has(id.toString()));
+    if (ordered.length) return ordered;
+  }
+  const name = defaultPostScriptNameForWorkflow(workflowKey);
+  if (name) {
+    await ensureMobileResearchPostScripts();
+    const ps = await prisma.postScript.findFirst({ where: { name }, orderBy: { insertedAt: 'asc' }, select: { id: true } });
+    if (ps) return [ps.id];
+  }
+  const first = await prisma.postScript.findFirst({ orderBy: { id: 'asc' }, select: { id: true } });
+  if (!first) throw new Error('No post-scripts seeded.');
+  return [first.id];
+}
+
+// APK scans historically ran on the local model. The Android/Samsung tabs now let the user
+// pick any configured provider/model; default to the local engine when nothing is supplied.
+function resolveApkModel({ model, modelProvider, harness, thinkingEffort }) {
+  const m = String(model ?? '').trim();
+  const p = String(modelProvider ?? '').trim();
+  const h = String(harness ?? '').trim();
+  const e = String(thinkingEffort ?? '').trim();
+  return {
+    model: m || 'local',
+    modelProvider: p || 'local',
+    harness: h || 'local',
+    thinkingEffort: e || 'medium',
+  };
+}
+
+async function createApkScan(filename, opts = {}) {
+  const {
+    analysisMode = 'static',
+    includeThirdParty = false,
+    workflowKey = 'triage',
+    passes,
+    model,
+    modelProvider,
+    harness,
+    thinkingEffort,
+    postScriptIds,
+    rankerIds,
+    rankerExtra,
+  } = opts;
   // 'triage'   = default single-pass + engine specialist investigation phase.
   // 'deep'     = the staged Android Deep Research DAG (map → trace → investigate), A/B.
   // 'deepdyn'  = the layered pipeline (Mobile PT triage → deep research → on-device
@@ -167,16 +273,16 @@ async function createApkScan(filename, analysisMode = 'static', includeThirdPart
   // Deep+dynamic caps how many of the highest-severity findings get the (expensive) live
   // on-device verification pass — keeps runtime bounded on the single local GPU. 1–20.
   const verifyTopN = isDeepDynamic ? Math.min(20, Math.max(1, Math.trunc(Number(passes)) || 6)) : null;
-  const postScript = await prisma.postScript.findFirst({ orderBy: { id: 'asc' } });
-  if (!postScript) throw new Error('No post-scripts seeded.');
-  const severityRanker = await apkSeverityRankerContent();
+  const selectedPostScriptIds = await resolveApkPostScriptIds({ postScriptIds, workflowKey });
+  const severityRanker = await resolveApkSeverityRanker({ rankerIds, rankerExtra, workflowKey });
+  const modelConfig = resolveApkModel({ model, modelProvider, harness, thinkingEffort });
   const attachedSkillIds = isSamsung ? await samsungAgentSkillIds() : [];
   const localPath = path.join(INBOX, filename);
   const sha = crypto.createHash('sha256').update(fs.readFileSync(localPath)).digest('hex');
   const scan = await prisma.scan.create({
     data: {
       workflowId: workflow.id,
-      postScriptId: postScript.id,
+      postScriptId: selectedPostScriptIds[0],
       repoFull: filename.replace(APK_SUFFIX_RE, ''),
       repoKind: 'apk',
       commitSha: sha,
@@ -197,11 +303,14 @@ async function createApkScan(filename, analysisMode = 'static', includeThirdPart
         // The dynamic-research workflow drives the engine's 9-phase on-device pipeline.
         ...(isDynamicResearch ? { dynamic_research: true, verify_top_n: Math.min(20, Math.max(1, Math.trunc(Number(passes)) || 8)) } : {}),
         ...(isSamsung ? { dynamic_research: true, samsung_research: true, verify_top_n: Math.min(20, Math.max(1, Math.trunc(Number(passes)) || 8)) } : {}),
+        // All selected post-scripts run after ranking; postScriptId above is the primary.
+        post_script_ids: selectedPostScriptIds.map((id) => id.toString()),
+        ...(attachedSkillIds.length ? { agent_skill_ids: attachedSkillIds.map((id) => id.toString()) } : {}),
       },
-      model: 'local',
-      modelProvider: 'local',
-      harness: 'local',
-      thinkingEffort: 'medium',
+      model: modelConfig.model,
+      modelProvider: modelConfig.modelProvider,
+      harness: modelConfig.harness,
+      thinkingEffort: modelConfig.thinkingEffort,
       status: 'queued',
       config: {},
       scopes: { files: [], lines: [] },
@@ -232,7 +341,19 @@ router.post('/scan', express.raw({ type: '*/*', limit: '512mb' }), async (req, r
     const filename = sanitizeName(req.query.filename);
     fs.mkdirSync(INBOX, { recursive: true });
     fs.writeFileSync(path.join(INBOX, filename), req.body);
-    const scan = await createApkScan(filename, req.query.mode, req.query.thirdParty, req.query.workflow, req.query.passes);
+    const scan = await createApkScan(filename, {
+      analysisMode: req.query.mode,
+      includeThirdParty: req.query.thirdParty,
+      workflowKey: req.query.workflow,
+      passes: req.query.passes,
+      model: req.query.model,
+      modelProvider: req.query.model_provider,
+      harness: req.query.harness,
+      thinkingEffort: req.query.thinking_effort,
+      postScriptIds: req.query.postScriptIds,
+      rankerIds: req.query.rankerIds,
+      rankerExtra: req.query.rankerExtra,
+    });
     res.json({ scanId: scan.id.toString(), filename, analysisMode: normalizeAnalysisMode(req.query.mode) });
   } catch (e) {
     next(e);
@@ -246,7 +367,19 @@ router.post('/scan-existing', async (req, res, next) => {
     if (!fs.existsSync(path.join(INBOX, filename))) {
       return res.status(404).json({ error: 'APK not found in the inbox folder.' });
     }
-    const scan = await createApkScan(filename, req.body?.mode, req.body?.thirdParty, req.body?.workflow, req.body?.passes);
+    const scan = await createApkScan(filename, {
+      analysisMode: req.body?.mode,
+      includeThirdParty: req.body?.thirdParty,
+      workflowKey: req.body?.workflow,
+      passes: req.body?.passes,
+      model: req.body?.model,
+      modelProvider: req.body?.model_provider,
+      harness: req.body?.harness,
+      thinkingEffort: req.body?.thinking_effort,
+      postScriptIds: req.body?.postScriptIds,
+      rankerIds: req.body?.rankerIds,
+      rankerExtra: req.body?.rankerExtra,
+    });
     res.json({ scanId: scan.id.toString(), filename, analysisMode: normalizeAnalysisMode(req.body?.mode) });
   } catch (e) {
     next(e);

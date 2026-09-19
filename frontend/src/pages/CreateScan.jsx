@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../api/client.js';
 import { usePageChrome } from '../context/ui.jsx';
@@ -21,6 +21,19 @@ import Pagination from '../components/Pagination.jsx';
 
 const MODEL_CATALOG_RETRY_LIMIT = 25;
 const MODEL_CATALOG_RETRY_DELAY_MS = 1_000;
+
+// Default post-script + severity-ranker names per pentest tab (must match the backend
+// seeds in defaultPostScripts.js / defaultSeverityRankers.js). Pre-selected on the tab.
+const PENTEST_DEFAULTS = {
+  android: {
+    postScript: 'Android exploit PoC & remediation',
+    ranker: 'Android on-device exploit impact',
+  },
+  samsung: {
+    postScript: 'Samsung bug-bounty writeup',
+    ranker: 'Samsung system-app impact',
+  },
+};
 
 const GITHUB_REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/;
 
@@ -118,6 +131,16 @@ export default function CreateScan() {
   const [inbox, setInbox] = useState([]);
   const [inboxErr, setInboxErr] = useState(null);
   const pentestWorkflow = topTab === 'samsung' ? 'samsung' : 'exploit';
+  // Per-tab model / post-script / ranker selection for the pentest flows (mirrors the repo
+  // form but kept separate so switching tabs doesn't clobber the repo configuration).
+  const [pentest, setPentest] = useState({
+    model: '',
+    model_provider: '',
+    harness: '',
+    thinking_effort: 'medium',
+    postScriptIds: [],
+    rankerIds: [],
+  });
 
   // Entering a pentest tab: pin the APK workflow to that tab and load the inbox once.
   useEffect(() => {
@@ -131,12 +154,50 @@ export default function CreateScan() {
     return () => { alive = false; };
   }, [topTab, pentestWorkflow]);
 
+  // Entering a pentest tab (once reference data is loaded): pre-select the tab's default
+  // model (prefer the local engine), post-script, and severity ranker — once per tab entry,
+  // so the periodic model-catalog refresh does not clobber the user's picks.
+  const pentestInitRef = useRef(null);
+  useEffect(() => {
+    if (topTab === 'repo' || !refData) return;
+    if (pentestInitRef.current === topTab) return;
+    pentestInitRef.current = topTab;
+    const defaults = PENTEST_DEFAULTS[topTab] || PENTEST_DEFAULTS.android;
+    const providers = refData.modelProviders || [];
+    const catalog = refData.modelCatalog;
+    // Prefer the local model for these device-verifying flows; fall back to the catalog default.
+    const seed = providers.includes('local') ? { model_provider: 'local' } : {};
+    const modelCfg = modelConfigurationForCatalog(seed, providers, catalog);
+    const ps = (refData.postScripts || []).find((p) => p.name === defaults.postScript);
+    const rk = (refData.severityRankers || []).find((r) => r.name === defaults.ranker);
+    setPentest((prev) => ({
+      ...prev,
+      ...(prev.model ? {} : modelCfg), // only seed the model once, keep later user changes
+      postScriptIds: ps ? [ps.id] : [],
+      rankerIds: rk ? [rk.id] : [],
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topTab, refData]);
+
+  // The model / post-script / ranker choices shared by both pentest scan entrypoints.
+  const pentestScanOptions = () => ({
+    mode: 'dynamic',
+    workflow: pentestWorkflow,
+    passes: apkPasses,
+    model: pentest.model,
+    model_provider: pentest.model_provider,
+    harness: pentest.harness,
+    thinking_effort: pentest.thinking_effort,
+    postScriptIds: (pentest.postScriptIds || []).join(','),
+    rankerIds: (pentest.rankerIds || []).join(','),
+  });
+
   // Scan an APK already in the inbox with the current tab's pinned workflow (device-verified).
   const scanInboxApk = async (filename) => {
     setApkBusy(true);
     setApkError(null);
     try {
-      const { scanId } = await api.scanApkExisting(filename, { mode: 'dynamic', workflow: pentestWorkflow, passes: apkPasses });
+      const { scanId } = await api.scanApkExisting(filename, pentestScanOptions());
       navigate(`/scans/${scanId}`);
     } catch {
       setApkError(`Could not start a scan for ${filename}.`);
@@ -144,12 +205,34 @@ export default function CreateScan() {
     }
   };
 
+  const togglePentestPostScript = (id) =>
+    setPentest((p) => ({
+      ...p,
+      postScriptIds: p.postScriptIds.includes(id)
+        ? p.postScriptIds.filter((x) => x !== id)
+        : [...p.postScriptIds, id],
+    }));
+  const togglePentestRanker = (id) =>
+    setPentest((p) => ({
+      ...p,
+      rankerIds: p.rankerIds.includes(id) ? p.rankerIds.filter((x) => x !== id) : [...p.rankerIds, id],
+    }));
+
   const renderPentestPanel = () => {
     const isSamsung = topTab === 'samsung';
-    const heading = isSamsung ? 'Samsung system-app research' : 'Android on-device pentest';
+    const defaults = PENTEST_DEFAULTS[topTab] || PENTEST_DEFAULTS.android;
     const blurb = isSamsung
       ? 'Runs the "Samsung System-App Research" workflow (com.samsung.*/com.sec.*) with the samsung-* skills attached — recon system components & custom-permission guards, then reproduce on a rooted Samsung device with screenshots.'
       : 'Runs the "Android Dynamic Exploit Research" workflow — recon → trace → hypothesize → reproduce on a rooted device with Frida bypasses + screenshots. Only findings proven on-device are kept.';
+    const pentestModelValid = modelConfigurationIsValid(pentest, modelProviders, refData.modelCatalog);
+    const pentestReady = hasConfiguredProvider && pentestModelValid && pentest.postScriptIds.length > 0 && !apkBusy;
+    const pentestBlocked = !hasConfiguredProvider
+      ? 'Add a provider in Accounts'
+      : !pentestModelValid
+        ? 'Complete the model configuration'
+        : pentest.postScriptIds.length === 0
+          ? 'Select a post-script'
+          : null;
     return (
       <div style={{ marginBottom: 8 }}>
         <div style={{ fontSize: 13.5, color: 'var(--text-2)', lineHeight: 1.55, marginBottom: 18 }}>{blurb}</div>
@@ -162,8 +245,106 @@ export default function CreateScan() {
           </div>
         )}
 
+        {/* ===================== MODEL & HARNESS ===================== */}
+        <Label>1 · MODEL &amp; HARNESS</Label>
+        <div style={{ marginBottom: 10 }}>
+          <ModelConfiguration
+            value={pentest}
+            onChange={(configuration) => setPentest((current) => ({ ...current, ...configuration }))}
+            providers={modelProviders}
+            catalog={refData.modelCatalog}
+            catalogError={modelCatalogError}
+          />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 11.5, color: 'var(--text-3)', margin: '2px 0 26px', lineHeight: 1.5 }}>
+          <span style={{ flex: 'none' }}>ⓘ</span>
+          The chosen model runs the static research steps (recon, trace, hypothesize, report). The on-device
+          reproduction steps always use the local engine's ADB/Frida device tools regardless of this choice, so a
+          cloud model still gets device-verified findings. The local model needs the native engine running.
+        </div>
+
+        {/* ===================== POST-SCRIPTS ===================== */}
+        <Label>2 · POST-SCRIPTS</Label>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--surface)', overflowY: 'auto', maxHeight: 280, marginBottom: 6 }}>
+          {postScripts.map((p) => {
+            const active = pentest.postScriptIds.includes(p.id);
+            const isTabDefault = p.name === defaults.postScript;
+            return (
+              <button
+                type="button"
+                key={p.id}
+                onClick={() => togglePentestPostScript(p.id)}
+                aria-pressed={active}
+                style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 11, padding: '11px 13px', cursor: 'pointer',
+                  borderBottom: '1px solid var(--border-2)', borderTop: 0, borderLeft: 0, borderRight: 0,
+                  background: active ? 'var(--accent-subtle)' : 'transparent', width: '100%', color: 'inherit',
+                  font: 'inherit', textAlign: 'left',
+                }}
+              >
+                <span className="mono" style={{ width: 18, height: 18, borderRadius: 5, border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`, background: active ? 'var(--accent)' : 'var(--surface)', color: 'var(--accent-fg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, flex: 'none', marginTop: 1 }}>
+                  {active ? '✓' : ''}
+                </span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div className="mono" style={{ fontWeight: 600, fontSize: 13 }}>
+                    {p.name}
+                    {isTabDefault && <span style={{ color: 'var(--accent)', fontSize: 10.5, marginLeft: 7 }}>default</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 3 }}>{p.description}</div>
+                </div>
+              </button>
+            );
+          })}
+          {postScripts.length === 0 && (
+            <div style={{ fontSize: 12.5, color: 'var(--text-3)', padding: 13 }}>No post-scripts defined.</div>
+          )}
+        </div>
+        <div className="mono" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 24 }}>
+          {pentest.postScriptIds.length} selected · runs per confirmed finding after ranking.
+        </div>
+
+        {/* ===================== SEVERITY RANKER ===================== */}
+        <Label>3 · SEVERITY RANKER</Label>
+        <div className="create-scan-ranker-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 6 }}>
+          {severityRankers.map((r) => {
+            const on = pentest.rankerIds.includes(r.id);
+            const order = on ? pentest.rankerIds.indexOf(r.id) + 1 : '';
+            const isTabDefault = r.name === defaults.ranker;
+            return (
+              <button
+                type="button"
+                key={r.id}
+                onClick={() => togglePentestRanker(r.id)}
+                aria-pressed={on}
+                style={{
+                  border: `1.5px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent-subtle)' : 'var(--surface)',
+                  borderRadius: 10, padding: '13px 14px', cursor: 'pointer', display: 'flex', gap: 11, alignItems: 'flex-start',
+                  width: '100%', color: 'inherit', font: 'inherit', textAlign: 'left',
+                }}
+              >
+                <span className="mono" style={{ width: 20, height: 20, borderRadius: 6, border: `1.5px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent)' : 'transparent', color: on ? 'var(--accent-fg)' : 'var(--text-3)', flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10.5, fontWeight: 600, marginTop: 1 }}>
+                  {order}
+                </span>
+                <div style={{ minWidth: 0 }}>
+                  <div className="mono" style={{ fontWeight: 600, fontSize: 13 }}>
+                    {r.name}
+                    {isTabDefault && <span style={{ color: 'var(--accent)', fontSize: 10.5, marginLeft: 7 }}>default</span>}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 3, lineHeight: 1.45 }}>{r.description}</div>
+                </div>
+              </button>
+            );
+          })}
+          {severityRankers.length === 0 && (
+            <div style={{ fontSize: 12.5, color: 'var(--text-3)', padding: '2px 0' }}>No saved rankers.</div>
+          )}
+        </div>
+        <div className="mono" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 24 }}>
+          {pentest.rankerIds.length} selected · concatenated in order into this scan's severity ranking.
+        </div>
+
         {/* Inbox picker */}
-        <Label>1 · CHOOSE AN APK FROM THE INBOX</Label>
+        <Label>4 · CHOOSE AN APK FROM THE INBOX</Label>
         <div style={{ marginBottom: 22 }}>
           {inboxErr ? (
             <div style={{ fontSize: 12.5, color: 'var(--fail)' }}>{inboxErr}</div>
@@ -176,7 +357,7 @@ export default function CreateScan() {
                 return (
                   <div key={name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '6px 8px', borderRadius: 8, background: 'var(--surface)' }}>
                     <span className="mono" style={{ fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
-                    <Button variant="ghost" disabled={apkBusy} onClick={() => scanInboxApk(name)}>Scan</Button>
+                    <Button variant="ghost" disabled={!pentestReady} title={pentestBlocked || 'Scan'} onClick={() => scanInboxApk(name)}>Scan</Button>
                   </div>
                 );
               })}
@@ -185,7 +366,7 @@ export default function CreateScan() {
         </div>
 
         {/* Upload */}
-        <Label>2 · OR UPLOAD AN APK</Label>
+        <Label>5 · OR UPLOAD AN APK</Label>
         <label
           htmlFor="pentest-apk-file"
           style={{
@@ -212,8 +393,8 @@ export default function CreateScan() {
         {apkProgress && <div style={{ color: 'var(--text-2)', fontSize: 12.5, marginBottom: 10 }}>{apkProgress}</div>}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Button disabled={!apkFiles.length || apkBusy} onClick={uploadApk}>
-            {apkBusy ? 'Starting…' : `Upload & run ${isSamsung ? 'Samsung' : 'pentest'} scan`}
+          <Button disabled={!apkFiles.length || !pentestReady} title={pentestBlocked || undefined} onClick={uploadApk}>
+            {apkBusy ? 'Starting…' : pentestBlocked ? pentestBlocked : `Upload & run ${isSamsung ? 'Samsung' : 'pentest'} scan`}
           </Button>
           <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
             device-verified · workflow: <span className="mono">{pentestWorkflow}</span>
@@ -240,10 +421,16 @@ export default function CreateScan() {
     setApkError(null);
     const created = [];
     const failed = [];
+    // On a pentest tab, carry the tab's model / post-script / ranker; on the repo APK tab,
+    // use the repo APK controls (local model, static/dynamic toggle, third-party flag).
+    const uploadOptions =
+      topTab === 'repo'
+        ? { mode: apkMode, thirdParty: apkThirdParty, workflow: apkWorkflow, passes: apkPasses }
+        : pentestScanOptions();
     for (const file of apkFiles) {
       setApkProgress(apkFiles.length > 1 ? `Queuing ${created.length + failed.length + 1} / ${apkFiles.length}…` : null);
       try {
-        const { scanId } = await api.uploadApkScan(file, { mode: apkMode, thirdParty: apkThirdParty, workflow: apkWorkflow, passes: apkPasses });
+        const { scanId } = await api.uploadApkScan(file, uploadOptions);
         created.push(scanId);
       } catch {
         failed.push(file.name);
