@@ -7,4 +7,4 @@ frida==16.7.19
 pyelftools>=0.31
 capstone>=5.0
 # WebSocket server for the real-time H.264 (screenrecord) device mirror.
-websockets>=12.0
+websockets>=17.1
