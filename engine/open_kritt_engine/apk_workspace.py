@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from .provider_credentials import job_environment
 from .workspace import DependencyWorkspace, JobWorkspace
 
 LOGGER = logging.getLogger("open_kritt_engine")
@@ -494,7 +495,14 @@ def prepare_apk_workspace(
     layout = apk_workspace_layout(cache_dir, manifest)
     job_root = Path(data_dir) / "jobs" / f"metadata-{metadata_id}"
     job_root.mkdir(parents=True, exist_ok=True)
-    workspace = JobWorkspace(root_dir=str(job_root), repo_base_dir=str(cache_dir), env={})
+    # The local harness talks to llama over HTTP and needs no process env, but a cloud
+    # harness (claude-code / codex) spawns a CLI subprocess that needs a real environment
+    # (PATH, provider creds, and — on the native Windows build — SYSTEMROOT/USERPROFILE for
+    # the Bun runtime + auth home). Build the same allowlisted job env other scans use.
+    provider = str(scan.get("model_provider") or scan.get("modelProvider") or "").strip().lower()
+    harness = str(scan.get("harness") or "").strip().lower()
+    workspace_env = job_environment(provider, harness) if provider and provider != "local" else {}
+    workspace = JobWorkspace(root_dir=str(job_root), repo_base_dir=str(cache_dir), env=workspace_env)
     return DependencyWorkspace(
         workspace=workspace,
         repo_dir=str(cache_dir),

@@ -754,8 +754,21 @@ def _container_path(value: str, *, repo_dir: str, home: str) -> str:
     return value
 
 
+def _scan_sandbox_is_native() -> bool:
+    """Native sandbox mode (local air-gapped Android build): harnesses run in-process on
+    the host with no per-job Docker isolation. See worker._scan_sandbox_mode."""
+    return (os.getenv("ENGINE_SCAN_SANDBOX", "docker") or "docker").strip().lower() == "native"
+
+
 def _scan_docker_command(cmd: list[str], repo_dir: str, env: dict[str, str]) -> list[str]:
-    """Run a tool-enabled harness in a per-job network and mount namespace."""
+    """Run a tool-enabled harness in a per-job network and mount namespace.
+
+    In native sandbox mode there is no per-job Docker runner (the engine runs on the host
+    to reach ADB/USB and the local GPU), so the CLI is run directly on the host instead —
+    the same unisolated execution the local harness already uses in that mode."""
+
+    if _scan_sandbox_is_native():
+        return cmd
 
     docker = shutil.which(os.getenv("ENGINE_DOCKER_BIN", "docker"))
     if not docker:
@@ -923,6 +936,24 @@ def _apply_claude_host_auth_home(env: dict[str, str], provider: str | None) -> d
     ):
         actual_env.pop(key, None)
     return actual_env
+
+
+def _claude_executable(env: dict[str, str]) -> str:
+    """Resolve the claude CLI. In native mode the engine runs on the host where `claude`
+    may live in ~/.local/bin without being on PATH, so fall back to that (and honor an
+    explicit ENGINE_CLAUDE_BIN override)."""
+    configured = env.get("ENGINE_CLAUDE_BIN") or os.getenv("ENGINE_CLAUDE_BIN")
+    if configured:
+        return configured
+    found = shutil.which("claude", path=env.get("PATH"))
+    if found:
+        return found
+    home = env.get("HOME") or env.get("USERPROFILE") or str(Path.home())
+    for name in ("claude.exe", "claude"):
+        candidate = Path(home) / ".local" / "bin" / name
+        if candidate.exists():
+            return str(candidate)
+    return "claude"
 
 
 def _claude_env(env: dict[str, str], model: str, model_provider: str | None = None) -> dict[str, str]:
@@ -1590,7 +1621,7 @@ class ClaudeHarness:
         actual_env = _apply_claude_host_auth_home(actual_env, provider)
         model = _claude_model_name(model, actual_env, self.model_provider)
         cmd = [
-            "claude",
+            _claude_executable(actual_env),
             "-p",
             "--model",
             model,

@@ -1319,15 +1319,25 @@ class Worker:
                     return did_work
                 # Device-reproduction steps need the local harness's ADB/Frida device tools.
                 # When the user picked a cloud model for the static research, still run those
-                # steps on the local engine so device verification keeps working.
+                # steps on the local engine so device verification keeps working. If the local
+                # model has been stopped, the local harness stubs the step out honestly (the
+                # [[REQUIRES_DEVICE]] guard returns an empty result without calling the model),
+                # so the cloud scan still completes with its static findings.
                 job_harness = harness
                 if not scan_harness_is_local and _step_requires_device(job.step):
                     if device_harness is None:
+                        from .local_harness import endpoint_reachable
+
+                        device_ctx = (
+                            self._device_context_for(current, workflow)
+                            if endpoint_reachable()
+                            else None
+                        )
                         device_harness = harness_for(
                             "local",
                             timeout_seconds=self.runtime_harness_timeout_seconds(),
                             model_provider="local",
-                            device_context=self._device_context_for(current, workflow),
+                            device_context=device_ctx,
                         )
                     job_harness = device_harness
                 did_claim = self.execute_job(

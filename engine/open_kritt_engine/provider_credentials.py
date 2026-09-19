@@ -31,6 +31,26 @@ JOB_COMMON_ENV_KEYS = frozenset(
         "https_proxy",
         "all_proxy",
         "no_proxy",
+        # Windows essentials for the native (host) build: the Claude/Codex CLIs run on the
+        # Bun/Node runtime, which needs SystemRoot for networking (winsock/DNS) and the user
+        # profile dirs to locate their auth (e.g. %USERPROFILE%\.claude). Python uppercases
+        # env keys on Windows, so these are UPPERCASE; absent on Linux, so a no-op there.
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "USERNAME",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "TEMP",
+        "TMP",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "ENGINE_CLAUDE_BIN",
     }
 )
 JOB_PROVIDER_ENV_KEYS = {
