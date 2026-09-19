@@ -3,7 +3,7 @@ psycopg[binary]==3.3.4
 pytest==9.1.1
 # Dynamic analysis (Phase 3). Pin to a frida-server staged on the research device.
 # 16.x keeps the built-in Java bridge the Android script ecosystem depends on.
-frida==16.7.19
+frida==17.18.0
 pyelftools>=0.31
 capstone>=5.0
 # WebSocket server for the real-time H.264 (screenrecord) device mirror.
