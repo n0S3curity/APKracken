@@ -36,6 +36,7 @@ from typing import Any
 # Imported lazily-safe: harnesses.py imports this module only inside harness_for(),
 # so importing these names at module load does not create a cycle at import time.
 from .harnesses import HarnessError, HarnessOutput, HarnessResult, _with_extractor_marker
+from .schema import EXTRACTOR_HELPER_FIELD
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8005/v1"
 DEFAULT_MODEL_ALIAS = "local"
@@ -445,6 +446,12 @@ def _reconcile_output(payload: dict[str, Any], schema: dict[str, Any]) -> dict[s
         payload["stub"] = True
         if not str(payload.get("stub_explanation") or "").strip():
             payload["stub_explanation"] = "No finding was established for this task."
+    # Multi-output schemas require the extractor-helper marker as a const-true property.
+    # Grammar-constrained answers already carry it, but hand-built envelopes (e.g. the
+    # [[REQUIRES_DEVICE]] no-device stub) do not — add it whenever the schema declares it.
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    if isinstance(props, dict) and EXTRACTOR_HELPER_FIELD in props:
+        payload[EXTRACTOR_HELPER_FIELD] = True
     return payload
 
 
