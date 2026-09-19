@@ -41,10 +41,17 @@ const STEPS = [
       'authoritative manifest intelligence. Enumerate each distinct production entrypoint an outside actor can ' +
       'reach: exported Activities/Services/Receivers, deep links (scheme+host), exported/grantUriPermissions ' +
       'ContentProviders (by authority), WebView JavaScript bridges, PendingIntents, FileProvider grants. Prove ' +
-      'reachability from manifest+code. One record per entrypoint; exclude bundled SDKs and test code. Stub if none.',
+      'reachability from manifest+code. One record per entrypoint; exclude bundled SDKs and test code. Stub if none. ' +
+      'IMPACT PAIRING: for each entrypoint, name the concrete mobile impacts an outside actor could plausibly drive ' +
+      'through it (impact_candidates) so the next step can investigate ONE entrypoint x ONE impact per context window. ' +
+      'Mobile impact vocabulary: credential/token/PII exfiltration, arbitrary file read or overwrite (traversal / ' +
+      'FileProvider), SQL injection, WebView JS-bridge RCE / arbitrary URL load, intent redirection / re-dispatch, ' +
+      'exported-component privilege escalation, provider data leak, insecure crypto / secret disclosure, native memory ' +
+      'corruption. Pick only impacts genuinely reachable from THIS entrypoint\'s controlled input; do not list all of them.',
     schema: {
       component: 'string', entry_kind: 'string', exported: 'boolean', authority: 'string', deep_link: 'string',
       controlled_input: 'string', file_path: 'string', line: 'number', reachability_evidence: 'string',
+      impact_candidates: 'array',
     },
   },
   // ---- depth 0b: native/JNI (horizontal, terminal) ----
@@ -70,13 +77,16 @@ const STEPS = [
     content:
       'Trace production flows from ONE entrypoint in {{repo_full}}: {{component}} (kind={{entry_kind}}, ' +
       'exported={{exported}}, authority={{authority}}, deep_link={{deep_link}}) at {{file_path}}:{{line}}; input ' +
-      '{{controlled_input}}. Read the source and trace each materially distinct flow the actor can drive to a ' +
-      'security-sensitive SINK (WebView.loadUrl/addJavascriptInterface, SQL, file open/traversal, Cipher, a ' +
-      're-dispatched Intent, Runtime.exec, secret read/write, JNI). Give an ordered flow_trace of "path:line symbol - ' +
-      'behavior" hops, the terminal_sink, and the input as it reaches the sink. Map accurately; do not judge exploitability yet. Stub if no reachable flow. ITERATIVE DEEPENING: work this ONE unit like an expert deep dive, not a glance. HYPOTHESISE then TEST against the code with your tools; FOLLOW EVERY LEAD recursively - when the flow calls another method/component/provider/native function, read it and chase the attacker-controlled data across files and layers to its real sink. A missing check, a reachable sink, or a controllable value is a thread to PULL: ask what it enables and what else it unlocks, then keep pulling until you have proven a concrete path or genuinely exhausted this unit. On later research passes, treat earlier findings shown to you as LEADS - go one hop deeper, build chains from confirmed primitives, and return only genuinely NEW or DEEPER results.',
+      '{{controlled_input}}. Hunt the candidate impacts flagged in recon: {{impact_candidates}}. Investigate ONE ' +
+      'entrypoint x ONE impact at a time (set target_impact to the one this trace pursues) and spend your full effort ' +
+      'proving THAT path, the way a focused researcher would. Read the source and trace each materially distinct flow ' +
+      'the actor can drive to a security-sensitive SINK (WebView.loadUrl/addJavascriptInterface, SQL, file ' +
+      'open/traversal, Cipher, a re-dispatched Intent, Runtime.exec, secret read/write, JNI) that realises target_impact. ' +
+      'Give an ordered flow_trace of "path:line symbol - behavior" hops, the terminal_sink, and the input as it reaches ' +
+      'the sink. Map accurately; do not judge exploitability yet. Stub if no reachable flow. ITERATIVE DEEPENING: work this ONE unit like an expert deep dive, not a glance. HYPOTHESISE then TEST against the code with your tools; FOLLOW EVERY LEAD recursively - when the flow calls another method/component/provider/native function, read it and chase the attacker-controlled data across files and layers to its real sink. A missing check, a reachable sink, or a controllable value is a thread to PULL: ask what it enables and what else it unlocks, then keep pulling until you have proven a concrete path or genuinely exhausted this unit. On later research passes, treat earlier findings shown to you as LEADS - go one hop deeper, build chains from confirmed primitives, and return only genuinely NEW or DEEPER results.',
     schema: {
-      ...CARRY, flow_summary: 'string', flow_trace: 'array', terminal_sink: 'string', input_to_sink: 'string',
-      security_relevance: 'string',
+      ...CARRY, target_impact: 'string', flow_summary: 'string', flow_trace: 'array', terminal_sink: 'string',
+      input_to_sink: 'string', security_relevance: 'string',
     },
   },
   // ---- depth 2: guards enumerate ----
