@@ -4,7 +4,7 @@ pytest==9.1.1
 # Dynamic analysis (Phase 3). Pin to a frida-server staged on the research device.
 # 16.x keeps the built-in Java bridge the Android script ecosystem depends on.
 frida==16.7.19
-pyelftools>=0.31
+pyelftools>=0.33
 capstone>=5.0
 # WebSocket server for the real-time H.264 (screenrecord) device mirror.
 websockets>=12.0
