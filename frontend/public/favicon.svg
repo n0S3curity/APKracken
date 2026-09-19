@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="APKraken">
+  <defs>
+    <linearGradient id="apkrakenBody" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4ade80"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+  </defs>
+  <!-- monster head: a rounded app-icon shape with a fang notch at the chin -->
+  <path fill="url(#apkrakenBody)"
+        d="M36 14 H64 A22 22 0 0 1 86 36 V60 A22 22 0 0 1 64 82 H60 L54 93 L48 82 H36 A22 22 0 0 1 14 60 V36 A22 22 0 0 1 36 14 Z"/>
+  <!-- menacing eyes with highlight glints -->
+  <circle cx="40" cy="42" r="9" fill="#0b1220"/>
+  <circle cx="60" cy="42" r="9" fill="#0b1220"/>
+  <circle cx="42.5" cy="39.5" r="3" fill="#ffffff"/>
+  <circle cx="62.5" cy="39.5" r="3" fill="#ffffff"/>
+  <!-- fanged grin -->
+  <path fill="#0b1220" d="M32 58 H68 V64 L60 72 L53 63 L46 72 L39 63 L32 66 Z"/>
+</svg>
