@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.0](https://github.com/n0S3curity/APKracken/compare/v1.1.0...v1.2.0) (2026-09-20)
+
+
+### Features
+
+* adopt kritt's entrypoint x impact pairing; methodology comparison ([593d595](https://github.com/n0S3curity/APKracken/commit/593d595edf40273d6f692a8877cb9a2e9bcbf1da))
+* live agent-activity feed on both scan pages (streaming Claude + local) ([3edf9ef](https://github.com/n0S3curity/APKracken/commit/3edf9ef3a51c1939525979546798f937b82cdaeb))
+* model + post-script + ranker selection on Android/Samsung tabs ([2aeed6d](https://github.com/n0S3curity/APKracken/commit/2aeed6db195027c5ee4842dfdb81347a2e0528e8))
+
+
+### Bug Fixes
+
+* add extractor-helper marker to device-step stub (multi-output schemas) ([b153381](https://github.com/n0S3curity/APKracken/commit/b153381e43f29a1beb0d59e1818a7f35c9274da4))
+* run cloud harnesses natively on Windows (Claude on local-only engine) ([6c83431](https://github.com/n0S3curity/APKracken/commit/6c8343171f1d6633dcdc8a9a766e191581b61e42))
+
 ## [1.1.0](https://github.com/Kritt-ai/open-kritt/compare/v1.0.0...v1.1.0) (2026-07-20)
 
 
