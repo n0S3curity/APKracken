@@ -1033,30 +1033,49 @@ function StatusMini({ scan }) {
   const first = active[0];
   const completedLineages = summary.completedStepLineages ?? summary.stepCompletedAttempts ?? 0;
   const expectedLineages = summary.expectedStepLineages ?? summary.stepAttempts ?? 0;
-  if (!summary.totalAttempts && !active.length && !summary.latestError) return null;
+  const activity = scan.reasoning?.agent_activity;
+  const lastEvent = activity?.events?.length ? activity.events[activity.events.length - 1] : null;
+  const showActivity = scan.status === 'running' && lastEvent;
+  if (!summary.totalAttempts && !active.length && !summary.latestError && !showActivity) return null;
   return (
-    <div
-      className="mono"
-      style={{ display: 'flex', flexWrap: 'wrap', gap: 9, marginTop: 9, fontSize: 11.2, color: 'var(--text-3)' }}
-    >
-      {first && (
-        <span style={{ color: 'var(--run)' }}>
-          {first.phaseLabel}: {first.title}
-        </span>
+    <>
+      <div
+        className="mono"
+        style={{ display: 'flex', flexWrap: 'wrap', gap: 9, marginTop: 9, fontSize: 11.2, color: 'var(--text-3)' }}
+      >
+        {first && (
+          <span style={{ color: 'var(--run)' }}>
+            {first.phaseLabel}: {first.title}
+          </span>
+        )}
+        {expectedLineages > 0 && (
+          <span>
+            {completedLineages}/{expectedLineages} workflow lineages
+          </span>
+        )}
+        {summary.totalAttempts > 0 && <span>{summary.totalAttempts} attempts</span>}
+        {currentFailedAttempts > 0 && (
+          <span style={{ color: rateLimited ? 'var(--pend)' : 'var(--fail)' }}>
+            {currentFailedAttempts} {rateLimited ? 'attempt errors' : 'failed'}
+          </span>
+        )}
+        {summary.postRunningAttempts > 0 && <span>{summary.postRunningAttempts} post running</span>}
+      </div>
+      {showActivity && (
+        <div
+          className="mono"
+          style={{ display: 'flex', gap: 7, alignItems: 'center', marginTop: 6, fontSize: 11, color: 'var(--text-3)', minWidth: 0 }}
+          title={lastEvent.text}
+        >
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--run)', flex: 'none' }} />
+          {activity.step && <span style={{ color: 'var(--run)', flex: 'none' }}>{activity.step}</span>}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {lastEvent.kind === 'tool' ? '⚙ ' : ''}
+            {lastEvent.text}
+          </span>
+        </div>
       )}
-      {expectedLineages > 0 && (
-        <span>
-          {completedLineages}/{expectedLineages} workflow lineages
-        </span>
-      )}
-      {summary.totalAttempts > 0 && <span>{summary.totalAttempts} attempts</span>}
-      {currentFailedAttempts > 0 && (
-        <span style={{ color: rateLimited ? 'var(--pend)' : 'var(--fail)' }}>
-          {currentFailedAttempts} {rateLimited ? 'attempt errors' : 'failed'}
-        </span>
-      )}
-      {summary.postRunningAttempts > 0 && <span>{summary.postRunningAttempts} post running</span>}
-    </div>
+    </>
   );
 }
 

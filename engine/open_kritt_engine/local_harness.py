@@ -35,6 +35,7 @@ from typing import Any
 
 # Imported lazily-safe: harnesses.py imports this module only inside harness_for(),
 # so importing these names at module load does not create a cycle at import time.
+from .agent_activity import report_activity
 from .harnesses import HarnessError, HarnessOutput, HarnessResult, _with_extractor_marker
 from .schema import EXTRACTOR_HELPER_FIELD
 
@@ -661,6 +662,7 @@ class LocalHarness:
             arguments = decision.get("arguments") if isinstance(decision.get("arguments"), dict) else {}
             if thought:
                 transcript.append(f"[step {step}] thought: {thought}")
+                report_activity("thought", thought)
             if tool in ("finish", "") or tool not in all_names:
                 if tool_calls_made < self.min_tool_steps:
                     transcript.append(f"[step {step}] premature finish rejected (only {tool_calls_made} tool calls)")
@@ -678,8 +680,10 @@ class LocalHarness:
                     )
                     continue
                 transcript.append(f"[step {step}] finish")
+                report_activity("finish", "Finished investigating this unit.")
                 return
             tool_calls_made += 1
+            report_activity("tool", f"{tool}({json.dumps(arguments)[:160]})", tool=tool)
             if device_tools is not None and tool in device_names:
                 observation = device_tools.dispatch(tool, arguments, thought=thought)
                 # Surface the saved screenshot path so the model can cite it in its output.
@@ -689,6 +693,7 @@ class LocalHarness:
             else:
                 observation = tools.dispatch(tool, arguments)
             transcript.append(f"[step {step}] {tool}({json.dumps(arguments)[:200]})\n{observation[:1500]}")
+            report_activity("observation", f"{tool} → {observation[:200]}", tool=tool)
             messages.append({"role": "assistant", "content": json.dumps(decision)})
             messages.append(
                 {"role": "user", "content": f"Observation from {tool}:\n{observation[:6000]}\n\nChoose the next tool or finish."}

@@ -1331,6 +1331,88 @@ function scanErrorTimestamp(error) {
   return null;
 }
 
+const ACTIVITY_KIND_STYLE = {
+  step: { label: '▶', color: 'var(--accent)' },
+  thought: { label: '…', color: 'var(--text-2)' },
+  tool: { label: '⚙', color: 'var(--run)' },
+  observation: { label: '←', color: 'var(--text-3)' },
+  finish: { label: '✓', color: 'var(--ok)' },
+  done: { label: '●', color: 'var(--ok)' },
+};
+
+// Live feed of what the agent is doing right now (engine writes reasoning.agent_activity;
+// both scan pages poll every second). Shows the current step + a scrolling event log.
+export function AgentActivityFeed({ activity, live = false }) {
+  const events = Array.isArray(activity?.events) ? activity.events : [];
+  const scrollRef = useRef(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [events.length]);
+  if (!events.length && !activity?.step) return null;
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7 }}>
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: live ? 'var(--run)' : 'var(--text-3)',
+            boxShadow: live ? '0 0 0 3px var(--run-bg)' : 'none',
+            flex: 'none',
+          }}
+        />
+        <span className="mono" style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 600 }}>
+          LIVE AGENT ACTIVITY
+        </span>
+        {activity?.step && (
+          <span className="mono" style={{ fontSize: 11, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {activity.step}
+          </span>
+        )}
+      </div>
+      <div
+        ref={scrollRef}
+        style={{
+          maxHeight: 230,
+          overflowY: 'auto',
+          border: '1px solid var(--border-2)',
+          borderRadius: 8,
+          background: 'var(--code-bg)',
+          padding: '8px 10px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+        }}
+      >
+        {events.map((ev, i) => {
+          const kind = ACTIVITY_KIND_STYLE[ev.kind] || ACTIVITY_KIND_STYLE.thought;
+          return (
+            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline', lineHeight: 1.4 }}>
+              <span className="mono" style={{ color: kind.color, fontSize: 11, flex: 'none', width: 12, textAlign: 'center' }}>
+                {kind.label}
+              </span>
+              <span
+                className="mono"
+                style={{
+                  fontSize: 11.5,
+                  color: ev.kind === 'tool' ? 'var(--text)' : 'var(--text-2)',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  minWidth: 0,
+                }}
+              >
+                {ev.text}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function ScanStatusPanel({ scan }) {
   const summary = scan.statusSummary || {};
   const rateLimited = scan.status === 'rate_limited';
@@ -1339,6 +1421,7 @@ export function ScanStatusPanel({ scan }) {
   const activeJobs = summary.activeJobs || [];
   const recentErrors = summary.recentErrors || [];
   const currentFailedAttempts = summary.currentFailedAttempts ?? summary.failedAttempts ?? 0;
+  const agentActivity = scan.reasoning?.agent_activity || null;
   const [expandedErrorIds, setExpandedErrorIds] = useState(() => new Set());
   const toggleError = (id) => {
     setExpandedErrorIds((prev) => {
@@ -1348,7 +1431,7 @@ export function ScanStatusPanel({ scan }) {
       return next;
     });
   };
-  if (!activeJobs.length && !recentErrors.length && !summary.totalAttempts) return null;
+  if (!activeJobs.length && !recentErrors.length && !summary.totalAttempts && !agentActivity) return null;
 
   return (
     <div
@@ -1457,6 +1540,8 @@ export function ScanStatusPanel({ scan }) {
           ))}
         </div>
       )}
+
+      {agentActivity && <AgentActivityFeed activity={agentActivity} live={scan.status === 'running'} />}
 
       {recentErrors.length > 0 && (
         <div style={{ marginTop: 15, display: 'grid', gap: 8 }}>

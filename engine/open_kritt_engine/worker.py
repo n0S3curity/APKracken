@@ -21,6 +21,7 @@ from .codex_updater import CodexCliGate, CodexUpdater
 from .config import EngineConfig
 from .db import Database, now_utc
 from .generation import GenerationRunner, GenerationValidationError
+from .agent_activity import ScanActivityWriter, clear_activity_sink, report_activity, set_activity_sink
 from .harnesses import (
     RETRYABLE_RATE_LIMIT_FAILURES,
     HarnessError,
@@ -1535,14 +1536,23 @@ class Worker:
                             )
                             conn.commit()
                         return True
-                    result = harness.run(
-                        prompt=prompt_filled,
-                        schema=schema,
-                        repo_dir=prepared.repo_dir,
-                        model=scan["model"],
-                        thinking_effort=thinking_effort,
-                        env=prepared.workspace.env,
+                    activity_writer = ScanActivityWriter(
+                        self.db, int(scan["id"]), f"{step.depth} · {step.name}"
                     )
+                    set_activity_sink(activity_writer)
+                    report_activity("step", f"Starting: {step.name}")
+                    try:
+                        result = harness.run(
+                            prompt=prompt_filled,
+                            schema=schema,
+                            repo_dir=prepared.repo_dir,
+                            model=scan["model"],
+                            thinking_effort=thinking_effort,
+                            env=prepared.workspace.env,
+                        )
+                    finally:
+                        activity_writer.finalize()
+                        clear_activity_sink()
                     mark_provider_account_available(
                         getattr(prepared.workspace, "provider_account_provider", None),
                         getattr(prepared.workspace, "provider_account_home", None),

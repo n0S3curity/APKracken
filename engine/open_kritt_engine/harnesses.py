@@ -5,14 +5,16 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from .agent_activity import report_activity
 from .claude_auth import CLAUDE_OAUTH_EXPIRY_ENV, claude_oauth_timeout_seconds
 from .provider_credentials import provider_environment
 from .schema import EXTRACTOR_HELPER_FIELD
@@ -599,6 +601,8 @@ def _run_process(cmd, prompt, cwd, timeout, env=None):
             cwd=cwd,
             env=process_env,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=timeout,
             check=False,
@@ -628,6 +632,153 @@ def _run_process(cmd, prompt, cwd, timeout, env=None):
             provider="openrouter" if _uses_openrouter(cmd, process_env) else None,
         )
     return proc
+
+
+def _run_process_streaming(cmd, prompt, cwd, timeout, env=None, on_line: Callable[[str], None] | None = None):
+    """Like _run_process but reads stdout line-by-line as the process runs, invoking
+    on_line(line) for each — used to publish a live agent-activity feed. stdin is written
+    and stderr drained on background threads to avoid deadlocks; a watchdog enforces the
+    timeout. Returns a CompletedProcess with the full stdout/stderr, matching _run_process."""
+
+    harness = _command_harness(cmd)
+    process_env = env if env is not None else _base_env()
+    process_cmd = _unprivileged_process_command(cmd, process_env)
+    docker_run = _is_docker_run(process_cmd)
+    if docker_run:
+        _prepare_docker_sandbox(process_cmd)
+    try:
+        proc = subprocess.Popen(  # noqa: S603 - controlled harness command
+            process_cmd,
+            cwd=cwd,
+            env=process_env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=1,
+        )
+    except OSError as exc:
+        if docker_run:
+            _cleanup_docker_run_container(process_cmd)
+        raise HarnessError("Harness could not be started.", code="start_failed", harness=harness) from exc
+
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    timed_out = {"v": False}
+
+    def _write_stdin():
+        try:
+            if proc.stdin is not None:
+                if prompt:
+                    proc.stdin.write(prompt)
+                proc.stdin.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _drain_stderr():
+        try:
+            if proc.stderr is not None:
+                for line in proc.stderr:
+                    stderr_parts.append(line)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _kill_on_timeout():
+        timed_out["v"] = True
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+    stdin_thread = threading.Thread(target=_write_stdin, daemon=True)
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    watchdog = threading.Timer(max(1.0, float(timeout)), _kill_on_timeout)
+    watchdog.daemon = True
+    stdin_thread.start()
+    stderr_thread.start()
+    watchdog.start()
+    try:
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                stdout_parts.append(line)
+                if on_line is not None:
+                    try:
+                        on_line(line)
+                    except Exception:  # noqa: BLE001 - activity reporting must never break a run
+                        pass
+    finally:
+        watchdog.cancel()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        stderr_thread.join(timeout=2)
+        stdin_thread.join(timeout=2)
+        if docker_run:
+            _cleanup_docker_run_container(process_cmd)
+
+    stdout = "".join(stdout_parts)
+    stderr = "".join(stderr_parts)
+    if timed_out["v"]:
+        raise HarnessError(
+            "Harness timed out before returning a result.",
+            output=HarnessOutput(stdout=stdout, stderr=stderr),
+            code="timeout",
+            harness=harness,
+        )
+    if proc.returncode not in (0, None):
+        raise _classified_harness_error(
+            (stdout + "\n" + stderr).strip()[-4000:],
+            harness=harness,
+            exit_code=proc.returncode,
+            output_artifact=HarnessOutput(stdout=stdout, stderr=stderr, returncode=proc.returncode),
+            provider="openrouter" if _uses_openrouter(cmd, process_env) else None,
+        )
+    return subprocess.CompletedProcess(process_cmd, proc.returncode or 0, stdout, stderr)
+
+
+def _summarize_tool_input(value: Any) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = str(value)
+    return text[:160]
+
+
+def _emit_claude_activity(line: str) -> None:
+    """Parse one Claude stream-json event line and publish a human-readable activity item."""
+    line = line.strip()
+    if not line:
+        return
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    etype = event.get("type")
+    if etype == "assistant":
+        for block in (event.get("message") or {}).get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text" and str(block.get("text") or "").strip():
+                report_activity("thought", block["text"].strip())
+            elif btype == "tool_use":
+                name = block.get("name") or "tool"
+                report_activity("tool", f"{name}({_summarize_tool_input(block.get('input') or {})})", tool=name)
+    elif etype == "user":
+        for block in (event.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                content = block.get("content")
+                text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+                report_activity("observation", str(text)[:200])
+    elif etype == "result":
+        report_activity("finish", "Step errored." if event.get("is_error") else "Step complete.")
 
 
 def _unprivileged_process_command(cmd: list[str], env: dict[str, str]) -> list[str]:
@@ -1629,7 +1780,7 @@ class ClaudeHarness:
             "--input-format",
             "text",
             "--output-format",
-            "stream-json" if provider == "openrouter" else "json",
+            "json" if (provider != "openrouter" and not allow_tools) else "stream-json",
             "--append-system-prompt",
             CLAUDE_WORKSPACE_SYSTEM_PROMPT if allow_tools else CLAUDE_GENERATION_SYSTEM_PROMPT,
         ]
@@ -1639,8 +1790,14 @@ class ClaudeHarness:
             # No tools, MCP configuration, or user/project settings are loaded for
             # untrusted generation requests. The response is schema-only text.
             cmd.extend(["--tools", "", "--permission-mode", "dontAsk", "--strict-mcp-config", "--setting-sources", ""])
+        # Tool-enabled workflow steps stream JSONL events so the engine can publish a live
+        # agent-activity feed (reasoning + tool calls) while keeping schema-constrained output.
+        # Untrusted generation stays on the blocking json path (no live feed needed there).
+        streaming = (provider == "openrouter") or allow_tools
         if provider != "openrouter":
             cmd.extend(["--json-schema", json.dumps(_claude_json_schema(schema))])
+            if streaming:
+                cmd.append("--verbose")  # stream-json with -p requires --verbose
         else:
             cmd.extend(["--include-partial-messages", "--verbose"])
         if thinking_effort and thinking_effort != "default":
@@ -1652,9 +1809,14 @@ class ClaudeHarness:
                 actual_env.get(CLAUDE_OAUTH_EXPIRY_ENV),
                 timeout_seconds,
             )
-        proc = _run_process(run_cmd, prompt, repo_dir, timeout_seconds, env=actual_env)
+        if streaming:
+            proc = _run_process_streaming(
+                run_cmd, prompt, repo_dir, timeout_seconds, env=actual_env, on_line=_emit_claude_activity
+            )
+        else:
+            proc = _run_process(run_cmd, prompt, repo_dir, timeout_seconds, env=actual_env)
         process_output = _process_output(proc)
-        if provider == "openrouter":
+        if streaming:
             try:
                 payload, usage = _extract_json_from_claude_stream(proc.stdout, provider=provider)
             except HarnessError as exc:
